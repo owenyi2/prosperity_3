@@ -1,7 +1,7 @@
 import json
 from typing import Dict, List
 from json import JSONEncoder
-import jsonpickle
+import jsonpickle # type: ignore
 
 Time = int
 Symbol = str
