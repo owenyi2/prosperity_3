@@ -157,13 +157,7 @@ class Strategy(ABC):
 def market_make_take(strat: Strategy, position: int, position_limit: int, fair_value: int, order_depth: OrderDepth, spread: int) -> None:
     osell = OrderedDict(sorted(order_depth.sell_orders.items()))
     obuy = OrderedDict(sorted(order_depth.buy_orders.items(), reverse=True))
-    
-    best_sell_pr = list(filter(lambda x: x > fair_value, osell.keys()))[0]
-    best_buy_pr = list(filter(lambda x: x < fair_value, obuy.keys()))[0]
-
-    undercut_buy = best_buy_pr + 1
-    undercut_sell = best_sell_pr - 1
-    
+     
     cpos = position
     for ask, vol in osell.items(): # vol < 0
         if ((ask < fair_value) or ((position < 0) and (ask == fair_value))):
@@ -172,13 +166,17 @@ def market_make_take(strat: Strategy, position: int, position_limit: int, fair_v
                 cpos += order_for
                 strat.buy(ask, order_for)
 
+    our_bid = fair_value - spread 
+    best_buy_pr = list(filter(lambda x: x < fair_value, obuy.keys()))
+    if best_buy_pr:
+        undercut_buy = best_buy_pr[0] + 1
+        our_bid = min(undercut_buy, our_bid)
+    if position == -position_limit:
+        # when we hit a position_limit, we want to be more aggressive with our bids/asks in order to liquidate position faster
+        our_bid = fair_value - spread // 2
+
     if cpos < position_limit:
         num = position_limit - cpos
-        our_bid = min(undercut_buy, fair_value - spread)
-        if position == -position_limit:
-            our_bid = fair_value - spread // 2 
-            # when we hit a position_limit, we want to be more aggressive with our bids/asks in order to liquidate position faster
-        print(our_bid)
         strat.buy(our_bid, num) 
         cpos += num
 
@@ -190,11 +188,16 @@ def market_make_take(strat: Strategy, position: int, position_limit: int, fair_v
                 cpos -= order_for
                 strat.sell(bid, order_for)
 
+    our_ask = fair_value + spread
+    best_sell_pr = list(filter(lambda x: x > fair_value, osell.keys()))
+    if best_sell_pr:
+        undercut_sell = best_sell_pr[0] - 1
+        our_ask = max(undercut_sell, our_ask)
+    if position == position_limit:
+        our_ask = fair_value + spread // 2
+
     if cpos > -position_limit:
         num = position_limit - (-cpos)
-        our_ask = max(undercut_sell, fair_value + spread)
-        if position == position_limit:
-            our_ask = fair_value + spread // 2
         strat.sell(our_ask, num)
         cpos -= num
      
@@ -209,13 +212,51 @@ class RainforestResin(Strategy):
         fair_value = 10000
         
         market_make_take(self, position, self.position_limit, fair_value, order_depth, self.spread)
-        pass
     
+class KelpSquidInk(Strategy):
+    def __init__(self, symbol: str, position_limit: int, spread: int) -> None:
+        super().__init__(symbol, position_limit)
+        self.spread = spread
+        self.midprice = 2000
+
+    def load_state(self, state: float) -> None:
+        self.previous_midprice = state
+
+    def save_state(self) -> float:
+        return self.midprice
+
+    def compute_midprice(self, state: TradingState) -> None:
+        order_depth = state.order_depths[self.symbol]
+         
+        buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
+        sell_orders = sorted(order_depth.sell_orders.items())
+
+        if not buy_orders:
+            popular_buy_price = self.previous_midprice - 1
+        else:
+            popular_buy_price = max(buy_orders, key=lambda tup: tup[1])[0]
+
+        if not sell_orders:
+            popular_sell_price = self.previous_midprice + 1
+        else:
+            popular_sell_price = min(sell_orders, key=lambda tup: tup[1])[0]
+
+        self.midprice = (popular_buy_price + popular_sell_price) / 2
+
+    def act(self, state: TradingState) -> None:
+        position: int = state.position.get(self.symbol, 0)
+        order_depth: OrderDepth = state.order_depths[self.symbol]
+        self.compute_midprice(state)
+        fair_value = round(self.midprice)
+        
+        market_make_take(self, position, self.position_limit, fair_value, order_depth, self.spread)
 
 class Trader:
     def __init__(self) -> None:
         init_dict: dict[Symbol, Tuple[Type[Strategy], int, dict[str, Any]]] = {
-                "RAINFOREST_RESIN": (RainforestResin, 50, {"spread": 2})
+                "RAINFOREST_RESIN": (RainforestResin, 50, {"spread": 2}),
+                "KELP": (KelpSquidInk, 50, {"spread": 1}),
+                "SQUID_INK": (KelpSquidInk, 50, {"spread": 2}),
             # Symbol: (Strategy, Position Limit, kwargs)
             # kwargs are for Strategy Parameters
                 }
@@ -243,6 +284,5 @@ class Trader:
             new_trader_data[symbol] = strategy.save_state()
 
         trader_data = json.dumps(new_trader_data, separators=(",", ":"))
-        input()
-        # logger.flush(state, result, conversions, trader_data)
+        logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
