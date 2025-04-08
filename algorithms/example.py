@@ -1,10 +1,11 @@
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Tuple
 
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
 
 import pprint
 from collections import OrderedDict
+from abc import ABC, abstractmethod
 
 class Logger:
     def __init__(self) -> None:
@@ -122,68 +123,82 @@ class Logger:
 
 logger = Logger()
 
+class Strategy(ABC):
+    def __init__(self, symbol: str, position_limit: int) -> None:
+        self.symbol = symbol
+        self.position_limit = position_limit
+
+    def load_state(self, state: Any) -> None:
+        return None 
+
+    def save_state(self) -> Any:
+        pass
+ 
+    @abstractmethod
+    def act(self, state: TradingState) -> None:
+        raise NotImplementedError()
+
+    def run(self, state: TradingState) -> tuple[list[Order], int]:
+        self.orders: list[Order] = []
+        self.conversions = 0
+
+        self.act(state)
+        return self.orders, self.conversions
+
+    def buy(self, price: int, quantity: int) -> None:
+        self.orders.append(Order(self.symbol, price, quantity))
+
+    def sell(self, price: int, quantity: int) -> None:
+        self.orders.append(Order(self.symbol, price, -quantity))
+
+    def convert(self, amount: int) -> None:
+        self.conversions += amount
+ 
+class RainforestResin(Strategy):
+    def __init__(self, symbol: str, position_limit: int) -> None:
+        super().__init__(symbol, position_limit)
+
+    def act(self, state: TradingState) -> None:
+        position: int = state.position.get(self.symbol, 0)
+        order_depth: OrderDepth = state.order_depths[self.symbol]
+        fair_value = 10000
+        
+        self.buy(fair_value - 1, 10)
+        self.sell(fair_value + 1, 10)
+        pass
+    
 
 class Trader:
-    position_limits = {
-        "RAINFOREST_RESIN": 50,
-        "KELP": 50,
-        "SQUID_INK": 50
-            }
+    def __init__(self) -> None:
+        init_dict: dict[Symbol, Tuple[Strategy, int, dict[str, Any]]] = {
+            "RAINFOREST_RESIN": (RainforestResin, 50, {})
+            # Symbol: (Strategy, Position Limit, kwargs)
+            # kwargs are for Strategy Parameters
+                }
 
-    def market_take(self, symbol: Symbol, fair_price: int, order_depth: OrderDepth, position: int):
-        osell = OrderedDict(sorted(order_depth.sell_orders.items()))
-        obuy = OrderedDict(sorted(order_depth.buy_orders.items(), reverse=True))
-        
-        # pprint.pp(osell) 
-        # pprint.pp(obuy) 
-
-        position_limit = self.position_limits[symbol]
-        orders = []
-        
-
-        cpos = position
-        for ask, vol in osell.items():
-            if ((ask < fair_price) or ((position < 0) and (ask == fair_price))) and cpos < position_limit:
-                order_for = min(-vol, position_limit - position)
-                cpos += order_for
-                orders.append(Order(symbol, ask, order_for))
-        
-        cpos = position
-        for bid, vol in obuy.items():
-            if ((bid > fair_price) or ((position > 0) and (bid == fair_price))) and cpos > -position_limit:
-                order_for = max(-vol, -position_limit - cpos)
-                cpos += order_for
-                orders.append(Order(symbol, bid, order_for))
-        return orders
+        self.strategies: dict[Symbol, Strategy] = {
+            symbol: cls(symbol, position_limit, **kwargs) for symbol, (cls, position_limit, kwargs) in init_dict.items()
+                }
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result: dict[Symbol, list[Order]] = {}
         conversions = 0
         trader_data = ""
         
-        symbol = "RAINFOREST_RESIN"
-        result[symbol] = self.market_take(
-                symbol, 
-                10000, 
-                state.order_depths[symbol], 
-                state.position.get(symbol, 0)
-            )
+        old_trader_data = json.loads(state.traderData) if state.traderData != "" else {}
+        new_trader_data = {}
 
-        """
-        INFO: 
-            Ignore conversions for now. This mechanic is used later
+        for symbol, strategy in self.strategies.items():
+            if symbol in old_trader_data:
+                strategy.load_state(old_trader_data[symbol])
 
-            trader_data: str is your only way to store state between ticks
+            if symbol in state.order_depths:
+                strategy_orders, strategy_conversions = strategy.run(state)
+                result[symbol] = strategy_orders
+                conversions += strategy_conversions
 
-            result: dict[Symbol, list[Order]] are the orders to submit
-        """
-        
-        # pprint.pp(json.loads(
-        #     state.toJSON()
-        #     ))
-        # input()
+            new_trader_data[symbol] = strategy.save_state()
 
-             
-
+        trader_data = json.dumps(new_trader_data, separators=(",", ":"))
         logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
