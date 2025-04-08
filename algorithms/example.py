@@ -4,6 +4,7 @@ from typing import Any, Dict
 from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
 
 import pprint
+from collections import OrderedDict
 
 class Logger:
     def __init__(self) -> None:
@@ -129,9 +130,31 @@ class Trader:
         "SQUID_INK": 50
             }
 
-    def market_take(self, symbol: Symbol, fair_price: int, order_depth: OrderDepth, net_position: int):
-        # pprint.pp(order_depth.sell_orders) 
-        # pprint.pp(order_depth.buy_orders) 
+    def market_take(self, symbol: Symbol, fair_price: int, order_depth: OrderDepth, position: int):
+        osell = OrderedDict(sorted(order_depth.sell_orders.items()))
+        obuy = OrderedDict(sorted(order_depth.buy_orders.items(), reverse=True))
+        
+        # pprint.pp(osell) 
+        # pprint.pp(obuy) 
+
+        position_limit = self.position_limits[symbol]
+        orders = []
+        
+
+        cpos = position
+        for ask, vol in osell.items():
+            if ((ask < fair_price) or ((position < 0) and (ask == fair_price))) and cpos < position_limit:
+                order_for = min(-vol, position_limit - position)
+                cpos += order_for
+                orders.append(Order(symbol, ask, order_for))
+        
+        cpos = position
+        for bid, vol in obuy.items():
+            if ((bid > fair_price) or ((position > 0) and (bid == fair_price))) and cpos > -position_limit:
+                order_for = max(-vol, -position_limit - cpos)
+                cpos += order_for
+                orders.append(Order(symbol, bid, order_for))
+        return orders
 
     def run(self, state: TradingState) -> tuple[dict[Symbol, list[Order]], int, str]:
         result: dict[Symbol, list[Order]] = {}
@@ -139,7 +162,7 @@ class Trader:
         trader_data = ""
         
         symbol = "RAINFOREST_RESIN"
-        self.market_take(
+        result[symbol] = self.market_take(
                 symbol, 
                 10000, 
                 state.order_depths[symbol], 
@@ -155,13 +178,12 @@ class Trader:
             result: dict[Symbol, list[Order]] are the orders to submit
         """
         
-        pprint.pp(json.loads(
-            state.toJSON()
-            ))
-        input()
-        # TODO: Add logic
+        # pprint.pp(json.loads(
+        #     state.toJSON()
+        #     ))
+        # input()
 
-        
+             
 
-        # logger.flush(state, result, conversions, trader_data)
+        logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
