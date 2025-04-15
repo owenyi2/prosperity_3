@@ -248,6 +248,8 @@ def trader_BS_CALL(S, K, T, sigma):
     return S * N(d1) - K * N(d2)
 
 def trader_implied_vol(opt_value, S, K, T):
+    if opt_value == S - K:
+        opt_value += 0.5
     tol = 10**-8
     return bisection(lambda sigma: trader_BS_CALL(S, K, T, sigma) - opt_value, tol)
 
@@ -302,7 +304,7 @@ class OptionChain():
             K = self.strikes[i]
             opt_value = self.midprice[i]
             S = self.midprice[-1]
-            T = 7 - (self.day + state.timestamp  / 1_000_000)
+            T = 8 - (self.day + state.timestamp  / 1_000_000)
             
             if opt_value is None or S is None:
                 self.delta[i] = None
@@ -388,7 +390,7 @@ class VolcanicRockVoucher(ForecastStrategy):
         opt_value = self.option_chain.midprice[self.i]
         S = self.option_chain.midprice[-1]
         K = self.option_chain.strikes[self.i]
-        T = 7 - (self.option_chain.day + state.timestamp / 1_000_000)
+        T = 8 - (self.option_chain.day + state.timestamp / 1_000_000)
         sigma = trader_implied_vol(opt_value, S, K, T) 
         
         if self.previous_ema is None:
@@ -411,7 +413,7 @@ class VolcanicRockVoucher(ForecastStrategy):
         
 class Trader:
     def __init__(self) -> None:
-        option_chain = OptionChain(day = 0,
+        option_chain = OptionChain(day = 2,
                                    spread_centre = [9503, 9751], 
                                    spread_dispersion = [2, 2])
 
