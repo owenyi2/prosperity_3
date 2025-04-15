@@ -264,6 +264,7 @@ class OptionChain():
                  ):
         self.strikes = [9500, 9750, 10000, 10250, 10500]
         self.delta: List[Optional[float]] = [None] * len(self.strikes)
+        self.iv: List[Optional[float]] = [None] * len(self.strikes)
         self.day = day
         self.midprice: list[Optional[float]] = [None] * (len(self.strikes) + 1)
         self.spread_centre: list[float] = spread_centre
@@ -308,6 +309,7 @@ class OptionChain():
                 continue
 
             sigma = trader_implied_vol(opt_value, S, K, T)
+            self.iv[i] = sigma
             self.delta[i] = trader_delta(S, K, sigma, T)
      
 class VolcanicRock(ForecastStrategy):
@@ -331,66 +333,71 @@ class VolcanicRock(ForecastStrategy):
         position: int = state.position.get(self.symbol, 0)
         order_depth: OrderDepth = state.order_depths[self.symbol]
         
-        # # for now we delta-hedge a single option strike
-        # i = 0
-        # if (self.option_chain.midprice[i] is None or 
-        #     self.option_chain.midprice[-1] is None or 
-        #     self.option_chain.delta[i] is None
-        #     ):
-        #     return  
-        #     
-        # spread = self.option_chain.midprice[-1] - self.option_chain.delta[i] * self.option_chain.midprice[i]
-        # score = np.clip((spread - self.option_chain.spread_centre[i]) / self.option_chain.spread_dispersion[i], -1, 1)
-
-        # desired_position = int(round(-score * 200))
-        # price = int(round(self.option_chain.midprice[-1]))
-    
-        # # print(f"delta: {self.option_chain.delta[i]}")
-        # # print(f"spread: {spread}")
-        # # print(f"score: {score}")
-        # # print(f"desired_position: {desired_position}")
-        # # input()
-        # self.reach_position(position, desired_position, order_depth, price)
-
 class VolcanicRockVoucher(ForecastStrategy):
     def __init__(self, symbol: str, position_limit: int, 
                  option_chain: OptionChain,
-                 i: int
+                 i: int,
+                 mean_iv: float,
                  ):
         super().__init__(symbol, position_limit)
         self.option_chain = option_chain
         self.i = i
+        self.mean_iv = mean_iv
+    
+    def go_long(self, state: TradingState, reserve_price: int) -> None:
+        order_depth = state.order_depths[self.symbol]
+        if len(order_depth.sell_orders) == 0:
+            price = reserve_price
+        else:
+            price = min(order_depth.sell_orders.keys())
+
+        position = state.position.get(self.symbol, 0)
+        to_buy = self.position_limit - position
+
+        self.buy(price, to_buy)
+
+    def go_short(self, state: TradingState, reserve_price: int) -> None:
+        order_depth = state.order_depths[self.symbol]
+        if len(order_depth.buy_orders) == 0:
+            price = reserve_price
+        else:
+            price = max(order_depth.buy_orders.keys())
+
+        position = state.position.get(self.symbol, 0)
+        to_sell = self.position_limit + position
+
+        self.sell(price, to_sell)
 
     def act(self, state: TradingState) -> None:
         position: int = state.position.get(self.symbol, 0)
         order_depth: OrderDepth = state.order_depths[self.symbol]
         
-        # for now we delta-hedge a single option strike
-        i = 0
-        if (self.option_chain.midprice[i] is None or 
+        if (self.option_chain.midprice[self.i] is None or 
             self.option_chain.midprice[-1] is None or 
-            self.option_chain.delta[i] is None
+            self.option_chain.delta[self.i] is None
             ):
             return  
-            
-        spread = self.option_chain.midprice[-1] - self.option_chain.delta[i] * self.option_chain.midprice[i]
-        score = np.clip((spread - self.option_chain.spread_centre[i]), -self.option_chain.spread_dispersion[i], self.option_chain.spread_dispersion[i]) / self.option_chain.spread_dispersion[i]
-        # TODO: we are calculating the score incorectly, we are supposed to clip before diviiding
-        # print(spread)
-        # print(spread - self.option_chain.spread_centre[i])
-        # print(score)
-        # input()
-
-        desired_position = int(round(score * self.option_chain.delta[i] * 200))
         
-        price = int(round(self.option_chain.midprice[-1]))
-    
-        self.reach_position(position, desired_position, order_depth, price)
+        S = self.option_chain.midprice[-1]
+        K = self.option_chain.strikes[self.i]
+        T = 7 - (self.option_chain.day + state.timestamp / 1_000_000)
+        sigma = self.mean_iv
+
+        fair = trader_BS_CALL(S, K, T, sigma)
+        opt_value = int(round(self.option_chain.midprice[self.i]))
+            
+        if opt_value > fair + 2:
+            self.go_short(state, opt_value + 2)
+            print("SHORT")
+        elif opt_value < fair - 2:
+            self.go_long(state, opt_value - 2)
+            print("LONG")
 
 
+        
 class Trader:
     def __init__(self) -> None:
-        option_chain = OptionChain(day = 0, 
+        option_chain = OptionChain(day = 0,
                                    spread_centre = [9503, 9751], 
                                    spread_dispersion = [2, 2])
 
@@ -400,8 +407,29 @@ class Trader:
                     }), # VOLCANIC ROCK MUST OCCUR IN THIS DICT BEFORE ANY OTHER VOLCANIC ROCK VOUCHER BECUASE IT IS REPONSIBLE FOR PRECOMPUTING VALUES SUCH AS OPTION DELTA ik its kinda fragile
                 "VOLCANIC_ROCK_VOUCHER_9500": (VolcanicRockVoucher, 200, {
                     "option_chain": option_chain,
-                    "i": 0
-                    }), # sigh we need to fix this, the position is hard stuck on 100%
+                    "i": 0, 
+                    "mean_iv": 0.008314746515299797,
+                    }), 
+                "VOLCANIC_ROCK_VOUCHER_9750": (VolcanicRockVoucher, 200, {
+                    "option_chain": option_chain,
+                    "i": 1, 
+                    "mean_iv": 0.01013465032455635,
+                    }), 
+                "VOLCANIC_ROCK_VOUCHER_10000": (VolcanicRockVoucher, 200, {
+                    "option_chain": option_chain,
+                    "i": 2, 
+                    "mean_iv": 0.00966230027221346,
+                    }), 
+                "VOLCANIC_ROCK_VOUCHER_10250": (VolcanicRockVoucher, 200, {
+                    "option_chain": option_chain,
+                    "i": 3, 
+                    "mean_iv": 0.008801660756999015,
+                    }), 
+                "VOLCANIC_ROCK_VOUCHER_10500": (VolcanicRockVoucher, 200, {
+                    "option_chain": option_chain,
+                    "i": 4, 
+                    "mean_iv": 0.00859746975362587,
+                    }), 
                 # "VOLCANIC_ROCK_VOUCHER_9750": (VolcanicRockVoucher, 200, {
                 #     "option_chain": option_chain,
                 #     "i": 1
