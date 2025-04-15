@@ -337,12 +337,13 @@ class VolcanicRockVoucher(ForecastStrategy):
     def __init__(self, symbol: str, position_limit: int, 
                  option_chain: OptionChain,
                  i: int,
-                 mean_iv: float,
+                 ema_alpha: float,
                  ):
         super().__init__(symbol, position_limit)
         self.option_chain = option_chain
         self.i = i
-        self.mean_iv = mean_iv
+        self.ema_alpha = ema_alpha
+        self.previous_ema = None 
     
     def go_long(self, state: TradingState, reserve_price: int) -> None:
         order_depth = state.order_depths[self.symbol]
@@ -367,6 +368,12 @@ class VolcanicRockVoucher(ForecastStrategy):
         to_sell = self.position_limit + position
 
         self.sell(price, to_sell)
+    
+    def load_state(self, state: Optional[float]) -> None:
+        self.previous_ema = state
+
+    def save_state(self) -> Optional[float]:
+        return self.previous_ema
 
     def act(self, state: TradingState) -> None:
         position: int = state.position.get(self.symbol, 0)
@@ -378,21 +385,28 @@ class VolcanicRockVoucher(ForecastStrategy):
             ):
             return  
         
+        opt_value = self.option_chain.midprice[self.i]
         S = self.option_chain.midprice[-1]
         K = self.option_chain.strikes[self.i]
         T = 7 - (self.option_chain.day + state.timestamp / 1_000_000)
-        sigma = self.mean_iv
-
-        fair = trader_BS_CALL(S, K, T, sigma)
-        opt_value = int(round(self.option_chain.midprice[self.i]))
-            
+        sigma = trader_implied_vol(opt_value, S, K, T) 
+        
+        if self.previous_ema is None:
+            ema = sigma
+        else:
+            ema = (1-self.ema_alpha) * self.previous_ema + self.ema_alpha * sigma
+         
+        fair = trader_BS_CALL(S, K, T, ema)
+        
+        opt_value = int(round(opt_value))
         if opt_value > fair + 2:
             self.go_short(state, opt_value + 2)
             print("SHORT")
         elif opt_value < fair - 2:
             self.go_long(state, opt_value - 2)
             print("LONG")
-
+        
+        self.previous_ema = ema
 
         
 class Trader:
@@ -408,27 +422,27 @@ class Trader:
                 "VOLCANIC_ROCK_VOUCHER_9500": (VolcanicRockVoucher, 200, {
                     "option_chain": option_chain,
                     "i": 0, 
-                    "mean_iv": 0.008314746515299797,
+                    "ema_alpha": 0.01,
                     }), 
                 "VOLCANIC_ROCK_VOUCHER_9750": (VolcanicRockVoucher, 200, {
                     "option_chain": option_chain,
                     "i": 1, 
-                    "mean_iv": 0.01013465032455635,
+                    "ema_alpha": 0.01,
                     }), 
                 "VOLCANIC_ROCK_VOUCHER_10000": (VolcanicRockVoucher, 200, {
                     "option_chain": option_chain,
                     "i": 2, 
-                    "mean_iv": 0.00966230027221346,
+                    "ema_alpha": 0.01,
                     }), 
                 "VOLCANIC_ROCK_VOUCHER_10250": (VolcanicRockVoucher, 200, {
                     "option_chain": option_chain,
                     "i": 3, 
-                    "mean_iv": 0.008801660756999015,
+                    "ema_alpha": 0.01,
                     }), 
                 "VOLCANIC_ROCK_VOUCHER_10500": (VolcanicRockVoucher, 200, {
                     "option_chain": option_chain,
                     "i": 4, 
-                    "mean_iv": 0.00859746975362587,
+                    "ema_alpha": 0.01,
                     }), 
                 # "VOLCANIC_ROCK_VOUCHER_9750": (VolcanicRockVoucher, 200, {
                 #     "option_chain": option_chain,
