@@ -214,13 +214,19 @@ class RainforestResin(Strategy):
         market_make_take(self, position, self.position_limit, fair_value, order_depth, self.spread)
     
 class SquidInk(Strategy):
-    def __init__(self, symbol: str, position_limit: int, window_length: int, spread: int) -> None:
+    def __init__(self, symbol: str, position_limit: int, wma_long_length: int, wma_short_length: int, threshold: float, scale: float) -> None:
         super().__init__(symbol, position_limit)
-        self.midprice: float = 2000
         self.window: list[float] = []
+        self.midprice: Optional[float] = None
+        self.long_wma: Optional[float] = None
+        self.short_wma: Optional[float] = None
 
-        self.window_length = window_length
-        self.spread = 2
+        self.wma_short_length = wma_short_length
+        self.wma_long_length = wma_long_length
+        self.threshold = threshold
+        self.scale = scale
+        self.window_length = max(self.wma_short_length, self.wma_long_length)
+
 
     def load_state(self, state: tuple[float, list[float]]) -> None:
         self.previous_midprice, self.window = state
@@ -228,69 +234,35 @@ class SquidInk(Strategy):
     def save_state(self) -> tuple[float, list[float]]:
         return self.midprice, self.window 
 
+    @staticmethod
+    def compute_wma(window: list[float], wma_length: int) -> float:
+        wma_length = min(len(window), wma_length)
+        weights = np.arange(1, wma_length + 1 , 1)
+        return np.dot(weights, window[-wma_length:]) / np.sum(weights)
+
     def update(self, state: TradingState) -> None:
         order_depth = state.order_depths[self.symbol]
          
         buy_orders = sorted(order_depth.buy_orders.items(), reverse=True)
         sell_orders = sorted(order_depth.sell_orders.items())
 
-        if not buy_orders:
-            popular_buy_price = self.previous_midprice - 1
-        else:
-            popular_buy_price = max(buy_orders, key=lambda tup: tup[1])[0]
+        if not buy_orders or not sell_orders:
+            self.midprice = self.previous_midprice 
+        else: 
+            best_sell, _ = buy_orders[0]
+            best_buy, _ = sell_orders[0]
+            self.midprice = (best_buy + best_sell) / 2
 
-        if not sell_orders:
-            popular_sell_price = self.previous_midprice + 1
-        else:
-            popular_sell_price = min(sell_orders, key=lambda tup: tup[1])[0]
-
-        self.midprice = (popular_buy_price + popular_sell_price) / 2
+        if self.midprice is None:
+            return
 
         self.window.append(self.midprice)
         if len(self.window) > self.window_length:
             self.window = self.window[1:]
         
-        weights = np.arange(1, self.window_length + 1, 1)[:len(self.window)]
-        self.wma = np.dot(weights, self.window) / np.sum(weights)
+        self.long_wma = self.compute_wma(self.window, self.wma_long_length)
+        self.short_wma = self.compute_wma(self.window, self.wma_short_length)
         
-    def market_make(self, position: int, our_bid: int, our_ask: int):
-        cpos = position
-        
-        "Right so unlike kelp or resin, there aren't immediately obvious orders to take"
-        if cpos < self.position_limit:
-            num = self.position_limit - cpos
-            self.buy(our_bid, num) 
-            cpos += num
-
-        cpos = position
-
-        if cpos > -self.position_limit:
-            num = self.position_limit - (-cpos)
-            self.sell(our_ask, num)
-            cpos -= num
-
-    def quantile_forecast(self, value: float) -> float: # \in [0, 1]
-        x_values = np.array([-10.        ,  -1.89090909,  -1.10909091,  -0.64545455,
-            -0.28181818,   0.03636364,   0.35454545,   0.69090909,
-             1.12727273,   1.78181818,  10.        ])
-        y_values = np.linspace(-1, 1, 11)
-
-        idx = np.searchsorted(x_values, value, side='right') - 1
-        
-        if idx < 0:
-            return y_values[0]
-        
-        if idx >= len(x_values) - 1:
-            return y_values[-1]
-        
-        x0 = x_values[idx]
-        x1 = x_values[idx + 1]
-        y0 = y_values[idx]
-        y1 = y_values[idx + 1]
-        interpolated_y = y0 + (value - x0) * (y1 - y0) / (x1 - x0)
-    
-        return interpolated_y
-    
     def reach_position(self, position: int, desired_position: int, aggressiveness: int, order_depth: OrderDepth) -> None:
         change = abs(desired_position - position)
          
@@ -312,52 +284,23 @@ class SquidInk(Strategy):
         if desired_position < position: # sell
             self.sell(best_ask, change)
 
-        # if desired_position > position: # buy
-        #     match aggressiveness:
-        #         case 0: # place a passive limit order
-        #             self.buy(best_bid, change) 
-        #         case 1: # place a limit order at the midprice
-        #             self.buy(midprice, change)
-        #         case 2: # place a market order and a limit order if necessary
-        #             self.buy(best_ask, ask_vol)
-        #             if ask_vol < change:
-        #                 self.buy(midprice, change - ask_vol)
-        #                  
-
-
-        # if desired_position < position: # sell
-        #     match aggressiveness:
-        #         case 0:
-        #             self.sell(best_ask, change)
-        #         case 1:
-        #             self.sell(midprice, change)
-        #         case 2: 
-        #             self.sell(best_bid, bid_vol)
-        #             if bid_vol < change:
-        #                 self.sell(midprice, change - ask_vol)
-    
     def act(self, state: TradingState) -> None:
         position: int = state.position.get(self.symbol, 0)
         order_depth: OrderDepth = state.order_depths[self.symbol]
         self.update(state)
-            
-        forecast = self.quantile_forecast(self.midprice - self.wma)
-        desired_position = int(round(self.position_limit * forecast))
-        
-        print(position, desired_position)
-        # if abs(forecast) > 0.8:
-        #     aggressiveness = 2
-        # elif abs(forecast) > 0.4:
-        #     aggressiveness = 1
-        # else:
-        #     aggressiveness = 0
-
-        self.reach_position(position, desired_position, 0, order_depth)
+       
+        signal = self.short_wma - self.long_wma
+        if abs(signal) > self.threshold:
+            desired_position = np.clip(-signal / self.scale * self.position_limit, -self.position_limit, self.position_limit)
+            self.reach_position(position, int(round(desired_position)), 0, order_depth)
 
 class Trader:
     def __init__(self) -> None:
         init_dict: dict[Symbol, Tuple[Type[Strategy], int, dict[str, Any]]] = {
-                "SQUID_INK": (SquidInk, 50, {"window_length": 10, "spread": 2}),
+                "SQUID_INK": (SquidInk, 50, {"wma_short_length": 3, 
+                                             "wma_long_length": 400,
+                                             "threshold": 1.5,
+                                             "scale": 5}),
             # Symbol: (Strategy, Position Limit, kwargs)
             # kwargs are for Strategy Parameters
                 }
