@@ -8,6 +8,8 @@ from abc import ABC, abstractmethod
 import numpy as np
 from statistics import NormalDist
 
+trades = 0
+
 class Logger:
     def __init__(self) -> None:
         self.logs = ""
@@ -161,20 +163,32 @@ class Macarons(Strategy):
 
     def act(self, state: TradingState) -> None:
         position = state.position.get(self.symbol, 0)
+        order_depth: OrderDepth = state.order_depths[self.symbol]
         self.convert(-1 * position)
         
         obs = state.observations.conversionObservations.get(self.symbol, None)
-        print(state.observations.conversionObservations)
+
+        best_ask = None
+        if order_depth.buy_orders:
+            best_ask = min(order_depth.sell_orders.keys())
 
         if obs is None:
             return
-
+        
         buy_price = obs.askPrice + obs.transportFees + obs.importTariff
+        
+        # our_ask = max(int(obs.bidPrice - 0.5), int(buy_price + 1))
+        our_ask = max(int(buy_price + 1), best_ask - 1)
+        
+        if position != 0:
+            # global trades 
+            # trades += 1
+            # print(trades)
+            pass
 
         effective_position_limit = 10
-        self.sell(max(int(obs.bidPrice - 0.5), int(buy_price + 1)), effective_position_limit)
+        self.sell(our_ask, effective_position_limit)
 
- 
 class Trader:
     def __init__(self) -> None:
         init_dict: dict[Symbol, Tuple[Type[Strategy], int, dict[str, Any]]] = {
