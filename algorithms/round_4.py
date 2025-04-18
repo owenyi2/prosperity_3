@@ -572,6 +572,31 @@ class VolcanicRockVoucher(ForecastStrategy):
         
         self.previous_ema = ema
 
+class Macarons(Strategy):
+    def __init__(self, symbol: str, position_limit: int):
+        super().__init__(symbol, position_limit)
+
+    def act(self, state: TradingState) -> None:
+        position = state.position.get(self.symbol, 0)
+        order_depth: OrderDepth = state.order_depths[self.symbol]
+        self.convert(-1 * position)
+        
+        obs = state.observations.conversionObservations.get(self.symbol, None)
+
+        best_ask = None
+        if order_depth.buy_orders:
+            best_ask = min(order_depth.sell_orders.keys())
+
+        if obs is None:
+            return
+        
+        buy_price = obs.askPrice + obs.transportFees + obs.importTariff
+        
+        our_ask = max(int(buy_price + 1), best_ask - 1)
+        
+        effective_position_limit = 10
+        self.sell(our_ask, effective_position_limit)
+
 class Trader:
     def __init__(self) -> None:
         option_chain = OptionChain(day = 0)
@@ -602,6 +627,7 @@ class Trader:
                     "i": 2, 
                     "ema_alpha": 0.01,
                     }), 
+                "MAGNIFICENT_MACARONS": (Macarons, 70, {})
             # Symbol: (Strategy, Position Limit, kwargs)
             # kwargs are for Strategy Parameters
                 }
