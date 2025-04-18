@@ -1,7 +1,7 @@
 import json
 from typing import Any, Dict, Tuple, Type, Literal, Optional
 
-from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState
+from datamodel import Listing, Observation, Order, OrderDepth, ProsperityEncoder, Symbol, Trade, TradingState, ConversionObservation
 
 from collections import OrderedDict
 from abc import ABC, abstractmethod
@@ -158,41 +158,81 @@ class Strategy(ABC):
         self.conversions += amount
 
 class Macarons(Strategy):
-    def __init__(self, symbol: str, position_limit: int):
+    def __init__(self, symbol: str, position_limit: int, csi: float):
         super().__init__(symbol, position_limit)
+        self.csi = csi
+        self.state = 0
+        self.previous_sunlightIndex = None
+        self.time = 0
+        self.sunlightIndex_grad = None
+
+    def load_state(self, state: Tuple[int, Optional[float], int, Optional[float]]) -> None:
+        self.state, self.previous_sunlightIndex, self.time, self.sunlightIndex_grad = state
+
+    def save_state(self) -> Any:
+        return self.state, self.previous_sunlightIndex, self.time, self.sunlightIndex_grad
+
+    def update(self, obs: ConversionObservation) -> None:
+        if self.previous_sunlightIndex is None:
+            self.time += 1
+            self.previous_sunlightIndex = obs.sunlightIndex
+            return
+
+        self.time += 1
+        if round(obs.sunlightIndex,1 ) != round(self.previous_sunlightIndex, 1):
+            self.sunlightIndex_grad = (obs.sunlightIndex - self.previous_sunlightIndex) / self.time
+            self.time = 1 
+            self.previous_sunlightIndex = obs.sunlightIndex
+        logger.print(self.sunlightIndex_grad)
 
     def act(self, state: TradingState) -> None:
         position = state.position.get(self.symbol, 0)
         order_depth: OrderDepth = state.order_depths[self.symbol]
-        self.convert(-1 * position)
-        
+
         obs = state.observations.conversionObservations.get(self.symbol, None)
-
-        best_ask = None
-        if order_depth.buy_orders:
-            best_ask = min(order_depth.sell_orders.keys())
-
-        if obs is None:
-            return
+        self.update(obs)
         
-        buy_price = obs.askPrice + obs.transportFees + obs.importTariff
+        if self.state == 0:
+            if obs.sunlightIndex < self.csi:
+                self.state = 1
+                
+        if self.state == 1:
+            if self.sunlightIndex_grad is not None:
+                if self.sunlightIndex_grad > 0.003:
+                    self.state = 0
         
-        # our_ask = max(int(obs.bidPrice - 0.5), int(buy_price + 1))
-        our_ask = max(int(buy_price + 1), best_ask - 1)
-        
-        if position != 0:
-            # global trades 
-            # trades += 1
-            # print(trades)
-            pass
+        if self.state == 0:
+            if position <= 0:
+                self.convert(-1 * max(-10, position))
+            
+                best_ask = None
+                if order_depth.sell_orders:
+                    best_ask = min(order_depth.sell_orders.keys())
 
-        effective_position_limit = 10
-        self.sell(our_ask, effective_position_limit)
+                if obs is None:
+                    return
+                
+                buy_price = obs.askPrice + obs.transportFees + obs.importTariff
+                
+                our_ask = max(int(buy_price + 1), best_ask - 1)
+                
+                effective_position_limit = 10
+                self.sell(our_ask, effective_position_limit)
+            else:
+                if order_depth.buy_orders:
+                    best_bid = min(order_depth.buy_orders.keys())
+                    self.sell(best_bid, position)
+        
+        if self.state == 1:
+            if order_depth.sell_orders:
+                best_ask = min(order_depth.sell_orders.keys())
+                price = best_ask
+                self.buy(price, self.position_limit - position)
 
 class Trader:
     def __init__(self) -> None:
         init_dict: dict[Symbol, Tuple[Type[Strategy], int, dict[str, Any]]] = {
-                "MAGNIFICENT_MACARONS": (Macarons, 75, {})
+                "MAGNIFICENT_MACARONS": (Macarons, 75, {"csi": 50})
             # Symbol: (Strategy, Position Limit, kwargs)
             # kwargs are for Strategy Parameters
                 }
@@ -220,6 +260,6 @@ class Trader:
             new_trader_data[symbol] = strategy.save_state()
 
         trader_data = json.dumps(new_trader_data, separators=(",", ":"))
-        # logger.flush(state, result, conversions, trader_data)
+        logger.flush(state, result, conversions, trader_data)
         return result, conversions, trader_data
 
